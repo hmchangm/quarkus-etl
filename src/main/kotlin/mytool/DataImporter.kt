@@ -1,9 +1,9 @@
 package mytool
 
-import io.agroal.api.AgroalDataSource
-import io.quarkus.logging.Log
 import jakarta.enterprise.context.ApplicationScoped
-import java.sql.Connection
+import jakarta.inject.Named
+import org.jdbi.v3.core.Jdbi
+import org.jdbi.v3.core.kotlin.useHandleUnchecked
 import kotlin.random.Random
 
 data class Address(
@@ -16,24 +16,18 @@ data class Address(
 
 @ApplicationScoped
 class DataImporter(
-    private val dataSource: AgroalDataSource,
+    @Named("sourceJdbi") private val sourceJdbi: Jdbi,
 ) {
     fun dummyInsert() {
-        val connection = dataSource.connection
+        createTable(sourceJdbi)
+        val startTime = System.currentTimeMillis()
+        insertAddresses(sourceJdbi)
+        val endTime = System.currentTimeMillis()
 
-        try {
-            createTable(connection)
-            val startTime = System.currentTimeMillis()
-            insertAddresses(connection)
-            val endTime = System.currentTimeMillis()
-
-            println("Inserted 1,000,000 addresses in ${(endTime - startTime) / 1000.0} seconds")
-        } finally {
-            connection.close()
-        }
+        println("Inserted 1,000,000 addresses in ${(endTime - startTime) / 1000.0} seconds")
     }
 
-    fun createTable(connection: Connection) {
+    fun createTable(jdbi: Jdbi) {
         val createTableSQL =
             """
             CREATE TABLE IF NOT EXISTS addresses (
@@ -46,39 +40,30 @@ class DataImporter(
             )
             """.trimIndent()
 
-        connection.createStatement().use { statement ->
-            statement.execute(createTableSQL)
+        jdbi.useHandleUnchecked {
+            it.execute(createTableSQL)
         }
     }
 
-    fun insertAddresses(connection: Connection) {
+    fun insertAddresses(jdbi: Jdbi) {
         val insertSQL =
             """
             INSERT INTO addresses (street_address, city, state, postal_code, country)
             VALUES (?, ?, ?, ?, ?)
             """.trimIndent()
 
-        connection.autoCommit = false
-        connection.prepareStatement(insertSQL).use { statement ->
-            for (i in 1..1_000_000) {
+        jdbi.useHandleUnchecked { handler ->
+            for (i in 1..10000) {
+                val insert = handler.createUpdate(insertSQL)
                 val address = generateDummyAddress()
-                statement.setString(1, address.streetAddress)
-                statement.setString(2, address.city)
-                statement.setString(3, address.state)
-                statement.setString(4, address.postalCode)
-                statement.setString(5, address.country)
-                statement.addBatch()
-
-                if (i % 10000 == 0) {
-                    statement.executeBatch()
-                    connection.commit()
-                    Log.info("$i inserted")
-                }
+                insert.bind(1, address.streetAddress)
+                insert.bind(2, address.city)
+                insert.bind(3, address.state)
+                insert.bind(4, address.postalCode)
+                insert.bind(5, address.country)
+                insert.execute()
             }
-            statement.executeBatch()
-            connection.commit()
         }
-        connection.autoCommit = true
     }
 
     fun generateDummyAddress(): Address {
